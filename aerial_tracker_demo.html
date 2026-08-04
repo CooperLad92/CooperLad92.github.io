@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Aerial Target Tracker — Demo</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #000; font-family: 'Courier New', Consolas, monospace;
+    color: #9fffb0; user-select: none;
+  }
+  #wrap { position: relative; width: 100vw; height: 100vh; }
+  #cam {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    object-fit: cover; z-index: 0; background: #05070a;
+  }
+  canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; background: transparent; }
+
+  .hud-panel {
+    position: absolute; z-index: 2; background: rgba(5,10,8,0.72);
+    border: 1px solid #2a5a3a; border-radius: 4px;
+    padding: 8px 10px; font-size: 11px; line-height: 1.5;
+    backdrop-filter: blur(2px);
+  }
+  #stats { top: 10px; left: 10px; min-width: 170px; }
+  #stats .row { display:flex; justify-content:space-between; gap:14px; }
+  #stats .label { color:#5fa878; }
+  #stats .val { color:#c8ffd4; font-weight:bold; }
+
+  #log { top: 10px; right: 10px; width: 210px; max-height: 46vh; overflow-y: auto; }
+  #log .entry { border-bottom: 1px solid #17331f; padding: 3px 0; font-size: 10.5px; }
+  #log .hit { color: #7fffb0; }
+  #log .miss { color: #ff8a7a; }
+
+  #controls {
+    position: absolute; z-index: 2; bottom: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center;
+  }
+  button {
+    font-family: inherit; font-size: 13px; padding: 10px 16px;
+    background: #12241a; color: #b8ffcf; border: 1px solid #3a7a52;
+    border-radius: 6px; cursor: pointer;
+  }
+  button:active { background: #1c3a28; }
+  #fireBtn {
+    background: #3a1414; border-color: #a03030; color: #ffcccc;
+    font-weight: bold; padding: 14px 26px; font-size: 15px;
+  }
+  #fireBtn.armed { background: #4a2a00; border-color: #ffb020; color: #ffe0a0; animation: pulse 0.5s infinite; }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 4px #ffb020;} 50%{box-shadow:0 0 16px #ffb020;} }
+
+  #banner {
+    position: absolute; z-index: 3; top: 40%; left: 50%; transform: translate(-50%,-50%);
+    font-size: 42px; font-weight: bold; letter-spacing: 4px;
+    opacity: 0; pointer-events: none; text-shadow: 0 0 14px currentColor;
+  }
+  #banner.show { animation: flashUp 0.9s ease-out forwards; }
+  @keyframes flashUp {
+    0% { opacity: 0; transform: translate(-50%,-40%) scale(0.7); }
+    15% { opacity: 1; transform: translate(-50%,-50%) scale(1.1); }
+    30% { transform: translate(-50%,-50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%,-65%) scale(1); }
+  }
+
+  #title {
+    position: absolute; z-index: 2; bottom: 12px; left: 10px; font-size: 10px; color: #bfe8cc;
+    text-shadow: 0 0 4px #000, 0 0 4px #000;
+  }
+  #windowBar {
+    position: absolute; z-index: 2; bottom: 70px; left: 50%; transform: translateX(-50%);
+    width: 260px; height: 8px; background: rgba(20,32,24,0.7); border: 1px solid #2a5a3a; border-radius: 4px; overflow: hidden;
+  }
+  #windowFill { height: 100%; width: 0%; background: linear-gradient(90deg,#4a2,#ff2); }
+  #camStatus {
+    position: absolute; z-index: 2; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    text-align: center; font-size: 13px; color: #ffcc88; max-width: 260px;
+    background: rgba(5,10,8,0.85); border: 1px solid #2a5a3a; border-radius: 6px; padding: 16px;
+  }
+  #camStatus button {
+    display: block; margin: 12px auto 0;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <video id="cam" autoplay playsinline muted></video>
+  <canvas id="c"></canvas>
+
+  <div id="camStatus">
+    Point your rear camera at open sky to test.<br>
+    Requires camera permission — and this page must be loaded over HTTPS
+    (e.g. served from your GitHub Pages site), not opened as a local file.
+    <button id="camBtn">Enable Camera</button>
+  </div>
+
+  <div class="hud-panel" id="stats">
+    <div class="row"><span class="label">STATE</span><span class="val" id="stState">SEARCHING</span></div>
+    <div class="row"><span class="label">DETECT MS</span><span class="val" id="stDetect">--</span></div>
+    <div class="row"><span class="label">TRACK STABILITY</span><span class="val" id="stStability">--</span></div>
+    <div class="row"><span class="label">PRED ERROR</span><span class="val" id="stPredErr">--</span></div>
+    <div class="row"><span class="label">TARGET SPEED</span><span class="val" id="stSpeed">--</span></div>
+    <div class="row"><span class="label">LEAD ANGLE</span><span class="val" id="stLead">--</span></div>
+    <div class="row"><span class="label">SHOTS</span><span class="val" id="stShots">0</span></div>
+    <div class="row"><span class="label">HIT %</span><span class="val" id="stHitPct">--</span></div>
+  </div>
+
+  <div class="hud-panel" id="log"><div class="entry">Session log started.</div></div>
+
+  <div id="windowBar"><div id="windowFill"></div></div>
+  <div id="banner"></div>
+
+  <div id="controls">
+    <button id="launchBtn">Launch Target</button>
+    <button id="fireBtn">HOLD TO ARM (or hold Space)</button>
+    <button id="resetBtn">Reset Stats</button>
+  </div>
+  <div id="title">AERIAL TARGET TRACKER — SIMULATION — not connected to real sensor</div>
+</div>
+
+<script>
+/*
+  DEMO / SIMULATION ONLY.
+  This does not process real camera frames — it fabricates a target flight path
+  and runs a simplified version of the same pipeline stages you described:
+    detect -> track -> predict trajectory -> compute optimal engagement window -> score
+  It's meant to let you feel the UX and data model before wiring the real
+  Jetson Orin Nano + RealSense D455 pipeline.
+*/
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const camVideo = document.getElementById('cam');
+const camStatus = document.getElementById('camStatus');
+const camBtn = document.getElementById('camBtn');
+
+function resize(){ canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+resize(); window.addEventListener('resize', resize);
+
+// ---------- camera ----------
+async function enableCamera(){
+  if (!window.isSecureContext){
+    camStatus.innerHTML = 'Camera blocked: this page is not loaded over HTTPS (or localhost).<br>Host it on GitHub Pages and open it via the https:// link on your phone.';
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    camStatus.innerHTML = 'This browser does not support camera access (getUserMedia unavailable).';
+    return;
+  }
+  try {
+    camStatus.innerHTML = 'Requesting camera permission…';
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    camVideo.srcObject = stream;
+    await camVideo.play();
+    camStatus.style.display = 'none';
+    log('Camera feed connected.');
+  } catch (err){
+    camStatus.innerHTML = 'Camera access failed: ' + (err.message || err.name) +
+      '.<br>Check site permissions in your browser settings.<br>' +
+      '<button id="camBtn2">Try Again</button>';
+    const retry = document.getElementById('camBtn2');
+    if (retry) retry.addEventListener('click', enableCamera);
+  }
+}
+camBtn.addEventListener('click', enableCamera);
+
+// ---------- state ----------
+let target = null;          // {x,y,vx,vy,r,spawnT}
+let trackHistory = [];      // recent positions for stability + prediction
+let state = 'SEARCHING';    // SEARCHING, TRACKING, WINDOW_OPEN, RESOLVED
+let detectStartT = 0;
+let detectMs = null;
+let windowOpenT = null;
+let windowDurationMs = 550; // how long the "perfect moment" lasts
+let armed = false;
+let shots = 0, hits = 0, passes = 0;
+let predictedPath = [];
+let predErrorPx = null;
+
+// --- hold-to-arm firing model ---
+// The AI is only PERMITTED to fire while the operator is physically holding
+// the trigger. It cannot fire on its own initiative. While held, it watches
+// for the tightest "sweet spot" moment (closer/stricter than the visual
+// LOCK band) and fires exactly once per target, automatically, right then.
+let holding = false;
+let firedThisTarget = false;
+const SWEET_SPOT_FRAC = 0.07; // fraction of canvas width — the true auto-fire threshold
+
+const stEl = {
+  state: document.getElementById('stState'),
+  detect: document.getElementById('stDetect'),
+  stability: document.getElementById('stStability'),
+  predErr: document.getElementById('stPredErr'),
+  speed: document.getElementById('stSpeed'),
+  lead: document.getElementById('stLead'),
+  shots: document.getElementById('stShots'),
+  hitPct: document.getElementById('stHitPct'),
+};
+const logEl = document.getElementById('log');
+const bannerEl = document.getElementById('banner');
+const fireBtn = document.getElementById('fireBtn');
+const windowFill = document.getElementById('windowFill');
+
+function log(msg, cls){
+  const d = document.createElement('div');
+  d.className = 'entry' + (cls ? ' ' + cls : '');
+  const t = new Date().toLocaleTimeString([], {hour12:false});
+  d.textContent = `[${t}] ${msg}`;
+  logEl.prepend(d);
+  while (logEl.children.length > 40) logEl.removeChild(logEl.lastChild);
+}
+
+// crosshair follows a slight simulated "operator tracking lag" toward target
+let aim = { x: 0, y: 0 };
+
+function launchTarget(){
+  const w = canvas.width, h = canvas.height;
+  const side = Math.random() < 0.5 ? 'left' : 'right';
+  const startX = side === 'left' ? -40 : w + 40;
+  const startY = h * (0.55 + Math.random()*0.25);
+  const dir = side === 'left' ? 1 : -1;
+  const speed = 5.5 + Math.random()*4; // px/frame
+  const arcHeight = 3.5 + Math.random()*2.5;
+
+  target = {
+    x: startX, y: startY,
+    vx: dir * speed,
+    vy: -arcHeight,
+    gravity: 0.055,
+    r: 9,
+    spawnT: performance.now(),
+  };
+  trackHistory = [];
+  predictedPath = [];
+  detectMs = null;
+  predErrorPx = null;
+  windowOpenT = null;
+  armed = false;
+  firedThisTarget = false;
+  fireBtn.classList.remove('armed');
+  windowFill.style.width = '0%';
+  state = 'SEARCHING';
+  detectStartT = performance.now();
+  log('Target launched.' + (holding ? ' Trigger already held — AI armed.' : ''));
+}
+
+function updateTarget(){
+  if (!target) return;
+  target.x += target.vx;
+  target.y += target.vy;
+  target.vy += target.gravity;
+
+  // "detection" happens after a short simulated latency once target is on-screen
+  if (state === 'SEARCHING'){
+    if (target.x > 20 && target.x < canvas.width - 20){
+      detectMs = Math.round(performance.now() - detectStartT);
+      state = 'TRACKING';
+      log(`Target detected (${detectMs} ms).`);
+    }
+  }
+
+  if (state === 'TRACKING' || state === 'WINDOW_OPEN'){
+    trackHistory.push({x: target.x, y: target.y, t: performance.now()});
+    if (trackHistory.length > 40) trackHistory.shift();
+
+    predictTrajectory();
+    evaluateFireWindow();
+  }
+
+  // aim eases toward target center (simulated operator/servo tracking)
+  aim.x += (target.x - aim.x) * 0.12;
+  aim.y += (target.y - aim.y) * 0.12;
+
+  // off screen bottom or far past edges -> despawn
+  if (target.y > canvas.height + 60 || target.x < -80 || target.x > canvas.width + 80){
+    if (state !== 'RESOLVED' && !firedThisTarget) {
+      passes++;
+      const reason = holding ? 'held, but AI found no clean shot' : 'trigger not held — AI could not fire';
+      log(`Target passed — no shot (${reason}).`);
+    }
+    target = null;
+    state = 'SEARCHING';
+    windowFill.style.width = '0%';
+    armed = false;
+    fireBtn.classList.remove('armed');
+  }
+}
+
+function predictTrajectory(){
+  if (trackHistory.length < 4) return;
+  const recent = trackHistory.slice(-6);
+  // estimate velocity from recent samples
+  const dt = (recent[recent.length-1].t - recent[0].t) / (recent.length-1);
+  let vx = 0, vy = 0;
+  for (let i=1;i<recent.length;i++){
+    vx += (recent[i].x - recent[i-1].x);
+    vy += (recent[i].y - recent[i-1].y);
+  }
+  vx /= (recent.length-1);
+  vy /= (recent.length-1);
+
+  predictedPath = [];
+  let px = target.x, py = target.y, pvx = vx, pvy = vy;
+  for (let i=0;i<18;i++){
+    pvy += target.gravity;
+    px += pvx; py += pvy;
+    predictedPath.push({x: px, y: py});
+  }
+
+  // simulated prediction error: compare last prediction made N frames ago to actual now
+  if (trackHistory.length > 10){
+    const past = trackHistory[trackHistory.length - 8];
+    const now = trackHistory[trackHistory.length - 1];
+    predErrorPx = Math.round(Math.hypot(now.x - past.x, now.y - past.y) * 0.15 + Math.random()*2);
+  }
+}
+
+function evaluateFireWindow(){
+  // "perfect moment": target near screen center, moving predictably,
+  // and within an ideal vertical band (apex-ish, before it drops too fast)
+  const cx = canvas.width/2, cy = canvas.height*0.55;
+  const distToCenter = Math.hypot(target.x - cx, target.y - cy);
+  const inBand = distToCenter < canvas.width * 0.22 && target.vy < 3.0;
+
+  if (inBand && state === 'TRACKING'){
+    state = 'WINDOW_OPEN';
+    windowOpenT = performance.now();
+    armed = true;
+    fireBtn.classList.add('armed');
+    log('Optimal engagement window OPEN.');
+  } else if (!inBand && state === 'WINDOW_OPEN'){
+    // window closed without a shot
+    const elapsed = performance.now() - windowOpenT;
+    if (elapsed > windowDurationMs){
+      state = 'TRACKING';
+      armed = false;
+      fireBtn.classList.remove('armed');
+      windowFill.style.width = '0%';
+    }
+  }
+
+  if (state === 'WINDOW_OPEN'){
+    const elapsed = performance.now() - windowOpenT;
+    const pct = Math.min(100, (elapsed / windowDurationMs) * 100);
+    windowFill.style.width = pct + '%';
+    if (pct >= 100){
+      state = 'TRACKING';
+      armed = false;
+      fireBtn.classList.remove('armed');
+      windowFill.style.width = '0%';
+    }
+  }
+
+  // --- the only place a shot can actually fire ---
+  // Requires: trigger physically held by operator, a shot not already taken
+  // on this target, and the target inside the tight sweet-spot band (a
+  // stricter subset of the visual LOCK band). The AI never fires unarmed.
+  if (holding && !firedThisTarget && distToCenter < canvas.width * SWEET_SPOT_FRAC && target.vy < 3.0){
+    autoFire();
+  }
+}
+
+function autoFire(){
+  // Reached only from evaluateFireWindow(), which already checked:
+  // holding === true, !firedThisTarget, and target inside the sweet spot.
+  // This models the AI computing the exact optimal instant and executing —
+  // it's a guaranteed hit by construction, since firing only ever happens
+  // at the instant the AI judges correct. Manual/early/late human firing
+  // is not possible in this model; the operator only supplies "permission".
+  firedThisTarget = true;
+  shots++;
+  hits++;
+
+  showBanner('AI FIRED — HIT', '#7fffb0');
+  log(`Shot ${shots}: AI-timed shot — HIT — pred err ${predErrorPx ?? '--'}px`, 'hit');
+
+  stEl.shots.textContent = shots;
+  stEl.hitPct.textContent = Math.round((hits/shots)*100) + '%';
+
+  state = 'RESOLVED';
+  armed = false;
+  fireBtn.classList.remove('armed');
+  windowFill.style.width = '0%';
+  setTimeout(()=>{ target = null; state='SEARCHING'; }, 150);
+}
+
+function startHold(){
+  if (holding) return;
+  holding = true;
+  fireBtn.classList.add('armed');
+  fireBtn.textContent = 'HOLDING — AI ARMED';
+  log('Trigger held — AI armed, watching for optimal instant.');
+}
+
+function endHold(){
+  if (!holding) return;
+  holding = false;
+  fireBtn.classList.remove('armed');
+  fireBtn.textContent = 'HOLD TO ARM (or hold Space)';
+  if (target && !firedThisTarget) log('Trigger released — AI safed.');
+}
+
+function showBanner(text, color){
+  bannerEl.textContent = text;
+  bannerEl.style.color = color;
+  bannerEl.classList.remove('show');
+  void bannerEl.offsetWidth;
+  bannerEl.classList.add('show');
+}
+
+// ---------- rendering ----------
+function draw(){
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0,0,w,h);
+
+  // horizon grid (RF-planner-esque aesthetic)
+  ctx.strokeStyle = 'rgba(60,140,90,0.12)';
+  ctx.lineWidth = 1;
+  for (let x=0; x<w; x+=60){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+  for (let y=0; y<h; y+=60){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+  ctx.strokeStyle = 'rgba(80,180,110,0.25)';
+  ctx.beginPath(); ctx.moveTo(0, h*0.72); ctx.lineTo(w, h*0.72); ctx.stroke();
+
+  // center reticle (fixed camera bore axis)
+  const cx = w/2, cy = h*0.55;
+  ctx.strokeStyle = 'rgba(150,255,180,0.25)';
+  ctx.beginPath(); ctx.arc(cx, cy, w*0.22, 0, Math.PI*2); ctx.stroke();
+
+  if (target){
+    // predicted path
+    if (predictedPath.length){
+      ctx.strokeStyle = 'rgba(255,210,90,0.6)';
+      ctx.setLineDash([4,4]);
+      ctx.beginPath();
+      ctx.moveTo(target.x, target.y);
+      predictedPath.forEach(p => ctx.lineTo(p.x, p.y));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // track trail
+    ctx.strokeStyle = 'rgba(120,255,170,0.5)';
+    ctx.beginPath();
+    trackHistory.forEach((p,i)=>{ i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y); });
+    ctx.stroke();
+
+    // target body
+    ctx.fillStyle = '#f2e6c8';
+    ctx.beginPath(); ctx.ellipse(target.x, target.y, target.r, target.r*0.4, Math.atan2(target.vy,target.vx), 0, Math.PI*2); ctx.fill();
+
+    // bounding box (detection viz)
+    const boxSize = 30;
+    ctx.strokeStyle = state === 'WINDOW_OPEN' ? '#ffcc33' : '#7fffb0';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(target.x-boxSize/2, target.y-boxSize/2, boxSize, boxSize);
+    ctx.font = '10px Courier New';
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fillText(state === 'WINDOW_OPEN' ? 'LOCK' : 'TRK', target.x-boxSize/2, target.y-boxSize/2-4);
+  }
+
+  // aim crosshair
+  ctx.strokeStyle = armed ? '#ffcc33' : 'rgba(200,255,220,0.6)';
+  ctx.lineWidth = 1.5;
+  const s = armed ? 16 : 12;
+  ctx.beginPath();
+  ctx.moveTo(aim.x-s, aim.y); ctx.lineTo(aim.x-4, aim.y);
+  ctx.moveTo(aim.x+4, aim.y); ctx.lineTo(aim.x+s, aim.y);
+  ctx.moveTo(aim.x, aim.y-s); ctx.lineTo(aim.x, aim.y-4);
+  ctx.moveTo(aim.x, aim.y+4); ctx.lineTo(aim.x, aim.y+s);
+  ctx.stroke();
+}
+
+// ---------- stat panel updates ----------
+function updateStats(){
+  stEl.state.textContent = state.replace('_',' ');
+  stEl.detect.textContent = detectMs !== null ? detectMs + ' ms' : '--';
+  if (trackHistory.length > 3){
+    // stability = inverse of jitter in recent positions
+    let jitter = 0;
+    for (let i=2;i<trackHistory.length;i++){
+      const a = trackHistory[i-2], b = trackHistory[i-1], c = trackHistory[i];
+      const ang1 = Math.atan2(b.y-a.y, b.x-a.x);
+      const ang2 = Math.atan2(c.y-b.y, c.x-b.x);
+      jitter += Math.abs(ang1-ang2);
+    }
+    const stability = Math.max(0, 100 - (jitter*30));
+    stEl.stability.textContent = Math.round(stability) + '%';
+  } else stEl.stability.textContent = '--';
+
+  stEl.predErr.textContent = predErrorPx !== null ? predErrorPx + ' px' : '--';
+
+  if (target){
+    const speed = Math.hypot(target.vx, target.vy);
+    stEl.speed.textContent = speed.toFixed(1) + ' px/f';
+    const leadDeg = Math.atan2(-target.vy, target.vx) * 180/Math.PI;
+    stEl.lead.textContent = leadDeg.toFixed(0) + '°';
+  } else {
+    stEl.speed.textContent = '--';
+    stEl.lead.textContent = '--';
+  }
+}
+
+// ---------- main loop ----------
+function loop(){
+  updateTarget();
+  draw();
+  updateStats();
+  requestAnimationFrame(loop);
+}
+loop();
+
+// ---------- controls ----------
+document.getElementById('launchBtn').addEventListener('click', launchTarget);
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  shots=0; hits=0;
+  stEl.shots.textContent='0'; stEl.hitPct.textContent='--';
+  logEl.innerHTML = '<div class="entry">Stats reset.</div>';
+});
+// Hold-to-arm: button must be physically held down (mouse or touch).
+// Releasing, or the pointer leaving the button, immediately safes the AI.
+fireBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); startHold(); });
+fireBtn.addEventListener('pointerup', endHold);
+fireBtn.addEventListener('pointerleave', endHold);
+fireBtn.addEventListener('pointercancel', endHold);
+
+window.addEventListener('keydown', (e)=>{
+  if (e.code === 'Space'){ e.preventDefault(); if (!e.repeat) startHold(); }
+  if (e.code === 'KeyL'){ launchTarget(); }
+});
+window.addEventListener('keyup', (e)=>{
+  if (e.code === 'Space'){ endHold(); }
+});
+// Safety: if window loses focus while held (e.g. alt-tab), release the trigger.
+window.addEventListener('blur', endHold);
+</script>
+</body>
+</html>
